@@ -2054,9 +2054,45 @@ pub struct StreamableHTTPTargetSpec {
 	pub path: String,
 }
 
+/// Scheme for deriving tool names for OpenAPI operations that have no `operationId`.
+#[apply(schema_enum!)]
+pub enum OperationIdDerivationScheme {
+	/// Method prefix, static path segments, `By`-suffixed parameters:
+	/// `getV1ProductsByProductId`.
+	PathsBy,
+	/// Method prefix with parameters left in place:
+	/// `getV1ProductsProductId`.
+	MethodPath,
+	/// Path-segment prefix with the method appended last, mirroring
+	/// OpenAPI Generator's `getOrGenerateOperationId`:
+	/// `v1ProductsProductIdGet`.
+	PathMethod,
+}
+
+impl Default for OperationIdDerivationScheme {
+	fn default() -> Self {
+		Self::PathsBy
+	}
+}
+
+pub(crate) fn default_true() -> bool {
+	true
+}
+
+fn is_true(v: &bool) -> bool {
+	*v
+}
+
 #[apply(schema_ser_schema!)]
 pub struct OpenAPITarget {
 	pub backend: SimpleBackendReference,
+	/// Derive tool names for operations that have no `operationId`; the hard
+	/// error remains available with `deriveMissingOperationIds: false`.
+	#[serde(default = "default_true", skip_serializing_if = "is_true")]
+	pub derive_missing_operation_ids: bool,
+	/// Scheme for deriving tool names when `operationId` is absent.
+	#[serde(default, skip_serializing_if = "crate::serdes::is_default")]
+	pub operation_id_derivation_scheme: OperationIdDerivationScheme,
 	#[serde(skip_serializing)]
 	#[cfg_attr(feature = "schema", schemars(with = "serde_json::value::RawValue"))]
 	pub schema: Arc<OpenAPI>,

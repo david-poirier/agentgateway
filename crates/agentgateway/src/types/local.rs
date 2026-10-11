@@ -1808,7 +1808,12 @@ impl LocalBackend {
 								clear_env,
 							}
 						},
-						LocalMcpTargetSpec::OpenAPI { backend, schema } => {
+						LocalMcpTargetSpec::OpenAPI {
+							backend,
+							schema,
+							derive_missing_operation_ids,
+							operation_id_derivation_scheme,
+						} => {
 							let (bref, _, be) = Self::process_mcp_backend(
 								local_name(name.clone()),
 								backend,
@@ -1824,6 +1829,8 @@ impl LocalBackend {
 							McpTargetSpec::OpenAPI(OpenAPITarget {
 								backend: bref,
 								schema: openapi_schema.into(),
+								derive_missing_operation_ids,
+								operation_id_derivation_scheme,
 							})
 						},
 					};
@@ -2112,6 +2119,10 @@ pub enum LocalMcpTargetSpec {
 		#[serde(flatten)]
 		backend: McpBackendHost,
 		schema: serdes::FileInlineOrRemote,
+		#[serde(default = "crate::types::agent::default_true")]
+		derive_missing_operation_ids: bool,
+		#[serde(default)]
+		operation_id_derivation_scheme: crate::types::agent::OperationIdDerivationScheme,
 	},
 }
 

@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
@@ -26,6 +27,7 @@ use crate::http::sessionpersistence;
 use crate::mcp::mergestream;
 use crate::mcp::mergestream::Messages;
 use crate::mcp::upstream::{IncomingRequestContext, UpstreamError};
+use crate::types::agent::OperationIdDerivationScheme;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct UpstreamOpenAPICall {
@@ -253,9 +255,143 @@ fn parameter_merge_name(parameter: &Parameter) -> String {
 ///
 /// To support this we should create a nested JSON schema which has each of them.
 /// That way the client code can properly separate the objects passed by the client.
-pub(crate) fn parse_openapi_schema(
+/// How to derive tool names for OpenAPI operations that have no `operationId`.
+pub(crate) struct NameOptions {
+	pub derive_missing_operation_ids: bool,
+	pub scheme: OperationIdDerivationScheme,
+}
+
+impl Default for NameOptions {
+	fn default() -> Self {
+		Self {
+			derive_missing_operation_ids: true,
+			scheme: OperationIdDerivationScheme::default(),
+		}
+	}
+}
+
+/// Derives a deterministic tool name from an HTTP method and a path.
+pub(crate) fn derive_tool_name(
+	method: &str,
+	path: &str,
+	scheme: OperationIdDerivationScheme,
+) -> String {
+	match scheme {
+		OperationIdDerivationScheme::MethodPath => {
+			let mut name = method.to_lowercase();
+			for segment in path.split('/').filter(|s| !s.is_empty()) {
+				name.push_str(&pascal_segment(segment));
+			}
+			sanitise_tool_name(&name)
+		},
+		OperationIdDerivationScheme::PathsBy => {
+			let mut name = method.to_lowercase();
+			let mut params: Vec<&str> = Vec::new();
+			for segment in path.split('/').filter(|s| !s.is_empty()) {
+				if let Some(param) = strip_braces(segment) {
+					params.push(param);
+				} else {
+					name.push_str(&pascal_segment(segment));
+				}
+			}
+			if !params.is_empty() {
+				name.push_str("By");
+			}
+			for (i, param) in params.iter().enumerate() {
+				if i > 0 {
+					name.push_str("And");
+				}
+				name.push_str(&pascal_segment(param));
+			}
+			sanitise_tool_name(&name)
+		},
+		OperationIdDerivationScheme::PathMethod => sanitise_tool_name(&path_method_name(method, path)),
+	}
+}
+
+/// Strips path-parameter braces: `{petId}` gives `Some("petId")`.
+fn strip_braces(segment: &str) -> Option<&str> {
+	segment.strip_prefix('{')?.strip_suffix('}')
+}
+
+/// Pascal-cases a path segment, capitalising the first letter of every
+/// `-`-separated part. Everything else (`_`, digits, existing casing) is
+/// preserved because treating `-`/`_` as word boundaries is not injective.
+fn pascal_segment(segment: &str) -> String {
+	let inner = strip_braces(segment).unwrap_or(segment);
+	inner
+		.split('-')
+		.map(cap_first)
+		.collect::<Vec<_>>()
+		.join("-")
+}
+
+/// Capitalises the first ASCII letter of the input, keeping everything else.
+fn cap_first(s: &str) -> String {
+	let mut out = s.to_string();
+	if let Some((i, c)) = s.char_indices().find(|(_, c)| c.is_ascii_alphabetic()) {
+		out.replace_range(i..i + 1, &c.to_ascii_uppercase().to_string());
+	}
+	out
+}
+
+/// Mirrors OpenAPI Generator's `getOrGenerateOperationId`: braces stripped
+/// from the whole path, first segment lowercased, later segments camelised on
+/// every non-alphanumeric boundary, HTTP method appended last.
+fn path_method_name(method: &str, path: &str) -> String {
+	let stripped = path.replace('{', "").replace('}', "");
+	let mut out = String::new();
+	for part in format!("{}/{}", stripped, method.to_lowercase())
+		.split('/')
+		.filter(|s| !s.is_empty())
+	{
+		if out.is_empty() {
+			let mut chars = part.chars();
+			if let Some(c) = chars.next() {
+				out.push(c.to_ascii_lowercase());
+				out.push_str(chars.as_str());
+			}
+		} else {
+			out.push_str(&camelize(part));
+		}
+	}
+	out
+}
+
+/// Camelises a segment, splitting on every non-alphanumeric boundary.
+fn camelize(part: &str) -> String {
+	part
+		.split(|c: char| !c.is_ascii_alphanumeric())
+		.filter(|s| !s.is_empty())
+		.map(cap_first)
+		.collect()
+}
+
+/// Keeps only characters allowed in MCP tool names and truncates to 128.
+fn sanitise_tool_name(name: &str) -> String {
+	name
+		.chars()
+		.filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+		.take(128)
+		.collect()
+}
+
+pub(crate) fn parse_openapi_schema_with_options(
 	open_api: &OpenAPI,
+	options: &NameOptions,
 ) -> Result<Vec<(Tool, UpstreamOpenAPICall)>, ParseError> {
+	// Explicit operation_ids are claimed first, so a derived name never
+	// displaces one.
+	let used_names = RefCell::new(
+		open_api
+			.paths
+			.iter()
+			.filter_map(|(_, path_info)| path_info.as_item())
+			.flat_map(|item| item.iter())
+			.filter_map(|(_, op)| op.operation_id.clone())
+			.collect::<HashSet<_>>(),
+	);
+
 	let tool_defs: Result<Vec<_>, _> = open_api
 		.paths
 		.iter()
@@ -268,12 +404,36 @@ pub(crate) fn parse_openapi_schema(
 					.iter()
 					.map(
 						|(method, op)| -> Result<(Tool, UpstreamOpenAPICall), ParseError> {
-							let name = op
-								.operation_id
-								.clone()
-								.ok_or(ParseError::InformationRequired(format!(
-									"operation_id is required for {path}"
-								)))?;
+							let name = match &op.operation_id {
+								Some(operation_id) => operation_id.clone(),
+								None if options.derive_missing_operation_ids => {
+									let base = derive_tool_name(&method.to_string(), path, options.scheme);
+									let mut candidate = base.clone();
+									let mut suffix = 2;
+									while used_names.borrow().contains(&candidate) {
+										// 123 leaves room for a "-NNNN" suffix inside 128.
+										candidate = format!("{}-{}", &base[..base.len().min(123)], suffix);
+										suffix += 1;
+									}
+									if candidate != base {
+										warn!(
+											"derived tool name {} already in use; using {}",
+											base, candidate
+										);
+									}
+									debug!(
+										"derived tool name {} for {} {} (no operation_id)",
+										candidate, method, path
+									);
+									used_names.borrow_mut().insert(candidate.clone());
+									candidate
+								},
+								None => {
+									return Err(ParseError::InformationRequired(format!(
+										"operation_id is required for {path}"
+									)));
+								},
+							};
 
 							// Build the schema
 							let mut final_schema = JsonSchema::default();

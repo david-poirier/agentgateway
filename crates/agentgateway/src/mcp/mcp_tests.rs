@@ -6065,6 +6065,8 @@ fn fake_openapi_target(name: &str, addr: SocketAddr) -> Arc<McpTarget> {
 			backend: crate::types::agent::SimpleBackendReference::Backend(strng::format!(
 				"/unused-{name}"
 			)),
+			derive_missing_operation_ids: true,
+			operation_id_derivation_scheme: crate::types::agent::OperationIdDerivationScheme::PathsBy,
 			schema: Arc::new(schema),
 		}),
 		backend_policies: Default::default(),

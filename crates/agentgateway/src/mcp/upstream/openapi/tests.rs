@@ -1096,7 +1096,8 @@ fn test_parse_openapi_schema_maps_summary_to_tool_title() {
 		}
 	}"#;
 	let open_api: OpenAPI = serde_json::from_str(raw).expect("valid OpenAPI schema");
-	let tools = super::parse_openapi_schema(&open_api).expect("schema should parse");
+	let tools = super::parse_openapi_schema_with_options(&open_api, &NameOptions::default())
+		.expect("schema should parse");
 
 	let (with_summary, _) = tools
 		.iter()
@@ -1151,7 +1152,8 @@ fn test_parse_openapi_schema_requires_path_item_parameters(#[case] required: Opt
 		}
 	}))
 	.expect("parseable OpenAPI schema");
-	let tools = super::parse_openapi_schema(&open_api).expect("schema should parse");
+	let tools = super::parse_openapi_schema_with_options(&open_api, &NameOptions::default())
+		.expect("schema should parse");
 	let (_tool, upstream) = tools
 		.iter()
 		.find(|(tool, _)| tool.name == "getTagsForWorkspace")
@@ -1227,7 +1229,8 @@ fn test_parse_openapi_schema_operation_level_parameter_overrides_path_level_para
 		}
 	}"#;
 	let open_api: OpenAPI = serde_json::from_str(raw).expect("parseable OpenAPI schema");
-	let tools = super::parse_openapi_schema(&open_api).expect("schema should parse");
+	let tools = super::parse_openapi_schema_with_options(&open_api, &NameOptions::default())
+		.expect("schema should parse");
 
 	let schema = tool_schema_for(&tools, "getWorkspaceTag");
 	let path_schema = nested_schema(schema, "path");
@@ -1292,7 +1295,8 @@ fn test_parse_openapi_schema_operation_level_header_override_is_case_insensitive
 		}
 	}"#;
 	let open_api: OpenAPI = serde_json::from_str(raw).expect("valid OpenAPI schema");
-	let tools = super::parse_openapi_schema(&open_api).expect("schema should parse");
+	let tools = super::parse_openapi_schema_with_options(&open_api, &NameOptions::default())
+		.expect("schema should parse");
 	let (tool, upstream) = tools
 		.iter()
 		.find(|(tool, _)| tool.name == "listWorkspaces")
@@ -1358,7 +1362,8 @@ fn test_parse_openapi_schema_ignores_path_level_cookie_parameters() {
 		}
 	}"#;
 	let open_api: OpenAPI = serde_json::from_str(raw).expect("valid OpenAPI schema");
-	let tools = super::parse_openapi_schema(&open_api).expect("schema should parse");
+	let tools = super::parse_openapi_schema_with_options(&open_api, &NameOptions::default())
+		.expect("schema should parse");
 
 	let schema = tool_schema_for(&tools, "getTagsForWorkspace");
 	let properties = schema
@@ -1429,7 +1434,8 @@ fn test_parse_openapi_schema_bundles_recursive_component_schemas() {
 		}
 	}"##;
 	let open_api: OpenAPI = serde_json::from_str(raw).expect("valid OpenAPI schema");
-	let tools = super::parse_openapi_schema(&open_api).expect("recursive schemas should parse");
+	let tools = super::parse_openapi_schema_with_options(&open_api, &NameOptions::default())
+		.expect("recursive schemas should parse");
 
 	assert_eq!(
 		Value::Object(tool_schema_for(&tools, "createNode").clone()),
@@ -2045,6 +2051,8 @@ async fn test_openapi_from_url() {
 		schema: FileInlineOrRemote::Remote {
 			url: schema_url.parse().unwrap(),
 		},
+		derive_missing_operation_ids: true,
+		operation_id_derivation_scheme: crate::types::agent::OperationIdDerivationScheme::PathsBy,
 	};
 
 	// Create a LocalBackend::MCP to test the full conversion pipeline
@@ -2173,7 +2181,8 @@ fn test_parse_openapi_schema_octet_stream_body() {
 		}
 	}"#;
 	let open_api: OpenAPI = serde_json::from_str(raw).expect("valid OpenAPI schema");
-	let tools = super::parse_openapi_schema(&open_api).expect("schema should parse");
+	let tools = super::parse_openapi_schema_with_options(&open_api, &NameOptions::default())
+		.expect("schema should parse");
 
 	let (tool, upstream) = tools
 		.iter()
@@ -2245,7 +2254,8 @@ fn test_parse_openapi_schema_json_preferred_over_octet_stream() {
 		}
 	}"#;
 	let open_api: OpenAPI = serde_json::from_str(raw).expect("valid OpenAPI schema");
-	let tools = super::parse_openapi_schema(&open_api).expect("schema should parse");
+	let tools = super::parse_openapi_schema_with_options(&open_api, &NameOptions::default())
+		.expect("schema should parse");
 
 	let (_tool, upstream) = tools
 		.iter()
@@ -2283,7 +2293,8 @@ fn test_parse_openapi_schema_unsupported_content_type_no_body_param() {
 		}
 	}"#;
 	let open_api: OpenAPI = serde_json::from_str(raw).expect("valid OpenAPI schema");
-	let tools = super::parse_openapi_schema(&open_api).expect("schema should parse");
+	let tools = super::parse_openapi_schema_with_options(&open_api, &NameOptions::default())
+		.expect("schema should parse");
 
 	let (tool, _upstream) = tools
 		.iter()
@@ -2423,4 +2434,196 @@ async fn test_call_tool_with_binary_body() {
 		result.unwrap().structured_content.unwrap(),
 		expected_response
 	);
+}
+
+// --- derived tool names ---
+
+#[rstest]
+#[case::method_path(
+	OperationIdDerivationScheme::MethodPath,
+	"get",
+	"/v1/products/{productId}",
+	"getV1ProductsProductId"
+)]
+#[case::paths_by(
+	OperationIdDerivationScheme::PathsBy,
+	"get",
+	"/v1/products/{productId}",
+	"getV1ProductsByProductId"
+)]
+#[case::path_method(
+	OperationIdDerivationScheme::PathMethod,
+	"get",
+	"/v1/products/{productId}",
+	"v1ProductsProductIdGet"
+)]
+#[case::paths_by_multi_param(
+	OperationIdDerivationScheme::PathsBy,
+	"post",
+	"/{tenantId}/v1/payments/{paymentId}/approve",
+	"postV1PaymentsApproveByTenantIdAndPaymentId"
+)]
+#[case::method_path_param_inline(
+	OperationIdDerivationScheme::MethodPath,
+	"delete",
+	"/v1/costcodes/{costCodeId}",
+	"deleteV1CostcodesCostCodeId"
+)]
+fn test_derive_tool_name(
+	#[case] scheme: OperationIdDerivationScheme,
+	#[case] method: &str,
+	#[case] path: &str,
+	#[case] expected: &str,
+) {
+	assert_eq!(derive_tool_name(method, path, scheme), expected);
+}
+
+#[test]
+fn test_derive_tool_name_hyphen_segments_are_capitalised_per_part() {
+	assert_eq!(
+		derive_tool_name(
+			"get",
+			"/v1/payment-schedule-line-types",
+			OperationIdDerivationScheme::PathsBy
+		),
+		"getV1Payment-Schedule-Line-Types"
+	);
+}
+
+#[test]
+fn test_derive_tool_name_underscore_is_not_a_word_boundary() {
+	assert_ne!(
+		derive_tool_name("get", "/v1/payments", OperationIdDerivationScheme::PathsBy),
+		derive_tool_name("get", "/v1/_payments", OperationIdDerivationScheme::PathsBy)
+	);
+}
+
+#[test]
+fn test_derive_tool_name_sanitises_and_truncates_to_128_chars() {
+	let path = format!("/v1/foo.bar baz/{}", "a".repeat(200));
+	let name = derive_tool_name("get", &path, OperationIdDerivationScheme::PathsBy);
+	// Only the segment-initial letter is capitalised (dots and spaces are not
+	// word boundaries), disallowed characters are dropped, and the result is
+	// truncated to the MCP tool-name limit.
+	let expected_full = format!("getV1FoobarbazA{}", "a".repeat(199));
+	assert!(expected_full.len() > 128);
+	assert_eq!(name, expected_full[..128]);
+	assert!(
+		name
+			.chars()
+			.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+	);
+}
+
+#[test]
+fn test_parse_openapi_schema_derives_names_when_operation_ids_are_missing() {
+	let raw = json!({
+		"openapi": "3.0.0",
+		"info": {"title": "T", "version": "1.0"},
+		"paths": {
+			"/v1/products/{productId}": {"get": {"responses": {"200": {"description": "ok"}}}},
+			"/v1/products": {"get": {"operationId": "listProducts", "responses": {"200": {"description": "ok"}}}}
+		}
+	});
+	let open_api: OpenAPI = serde_json::from_value(raw).expect("valid spec");
+	let tools =
+		parse_openapi_schema_with_options(&open_api, &NameOptions::default()).expect("should parse");
+	let names: Vec<String> = tools.iter().map(|(t, _)| t.name.to_string()).collect();
+	assert!(names.contains(&"getV1ProductsByProductId".to_string()));
+	assert!(names.contains(&"listProducts".to_string()));
+}
+
+#[test]
+fn test_parse_openapi_schema_uses_configured_scheme() {
+	let open_api: OpenAPI = serde_json::from_value(json!({
+		"openapi": "3.0.0",
+		"info": {"title": "T", "version": "1.0"},
+		"paths": {
+			"/v1/products/{productId}": {"get": {"responses": {"200": {"description": "ok"}}}}
+		}
+	}))
+	.expect("valid spec");
+	let tools = parse_openapi_schema_with_options(
+		&open_api,
+		&NameOptions {
+			derive_missing_operation_ids: true,
+			scheme: OperationIdDerivationScheme::PathMethod,
+		},
+	)
+	.expect("should parse");
+	assert_eq!(tools[0].0.name.as_ref(), "v1ProductsProductIdGet");
+}
+
+#[test]
+fn test_parse_openapi_schema_suffixes_duplicate_derived_names() {
+	let open_api: OpenAPI = serde_json::from_value(json!({
+		"openapi": "3.0.0",
+		"info": {"title": "T", "version": "1.0"},
+		"paths": {
+			"/v1/payments": {"get": {"responses": {"200": {"description": "ok"}}}},
+			"/v1/_payments": {"get": {"responses": {"200": {"description": "ok"}}}}
+		}
+	}))
+	.expect("valid spec");
+	let tools = parse_openapi_schema_with_options(
+		&open_api,
+		&NameOptions {
+			derive_missing_operation_ids: true,
+			scheme: OperationIdDerivationScheme::PathMethod,
+		},
+	)
+	.expect("should parse");
+	let mut names: Vec<String> = tools.iter().map(|(t, _)| t.name.to_string()).collect();
+	names.sort();
+	assert_eq!(
+		names,
+		vec!["v1PaymentsGet".to_string(), "v1PaymentsGet-2".to_string()]
+	);
+}
+
+#[test]
+fn test_parse_openapi_schema_suffixes_when_derived_name_matches_existing_operation_id() {
+	let open_api: OpenAPI = serde_json::from_value(json!({
+		"openapi": "3.0.0",
+		"info": {"title": "T", "version": "1.0"},
+		"paths": {
+			"/v1/payments": {"get": {"operationId": "v1PaymentsGet", "responses": {"200": {"description": "ok"}}}},
+			"/v1/_payments": {"get": {"responses": {"200": {"description": "ok"}}}}
+		}
+	}))
+	.expect("valid spec");
+	let tools = parse_openapi_schema_with_options(
+		&open_api,
+		&NameOptions {
+			derive_missing_operation_ids: true,
+			scheme: OperationIdDerivationScheme::PathMethod,
+		},
+	)
+	.expect("should parse");
+	let mut names: Vec<String> = tools.iter().map(|(t, _)| t.name.to_string()).collect();
+	names.sort();
+	assert_eq!(
+		names,
+		vec!["v1PaymentsGet".to_string(), "v1PaymentsGet-2".to_string()]
+	);
+}
+
+#[test]
+fn test_parse_openapi_schema_errors_when_derivation_is_disabled() {
+	let open_api: OpenAPI = serde_json::from_value(json!({
+		"openapi": "3.0.0",
+		"info": {"title": "T", "version": "1.0"},
+		"paths": {
+			"/v1/products/{productId}": {"get": {"responses": {"200": {"description": "ok"}}}}
+		}
+	}))
+	.expect("valid spec");
+	let result = parse_openapi_schema_with_options(
+		&open_api,
+		&NameOptions {
+			derive_missing_operation_ids: false,
+			scheme: OperationIdDerivationScheme::PathsBy,
+		},
+	);
+	assert!(matches!(result, Err(ParseError::InformationRequired(_))));
 }
